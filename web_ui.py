@@ -678,35 +678,46 @@ def api_log_stream():
 # Scheduler — 时间随机化 + 智能重试
 # ============================================================
 
-def _pick_random_trigger_time() -> datetime:
-    """每个整点随机选一个触发时刻: 前15分钟或后15分钟; 如果已过则推到下一小时"""
-    now = _now()
-    # 先算当前小时窗口
+def _pick_next_trigger(after: datetime, first: bool = False) -> datetime:
+    """选下一个触发时刻: 在 after 之后的下一个有效窗口内随机。
+       first=True 时不要求 45min 间隔 (启动首轮)。"""
+    earliest = after if first else after + timedelta(minutes=45)
+    hour_base = earliest.replace(minute=0, second=0, microsecond=0)
+
+    # 尝试: 后窗 (45-59) 是否有 >= earliest 的时刻
+    back_end = hour_base.replace(minute=59, second=59, microsecond=999999)
+    if back_end >= earliest:
+        minute = max(45, earliest.minute if earliest.hour == hour_base.hour else 45)
+        if minute <= 59:
+            minute = minute + secrets.randbelow(60 - minute) if minute < 59 else 59
+            return hour_base.replace(minute=minute, second=secrets.randbelow(60), microsecond=0)
+
+    # 尝试: 前窗 (0-14) — 只有 earliest 在同一小时且 <=14 才可能
+    if earliest.hour == hour_base.hour and earliest.minute <= 14:
+        front_end = hour_base.replace(minute=14, second=59, microsecond=999999)
+        if front_end >= earliest:
+            minute = max(earliest.minute, 0)
+            minute = minute + secrets.randbelow(15 - minute) if minute < 14 else 14
+            return hour_base.replace(minute=minute, second=secrets.randbelow(60), microsecond=0)
+
+    # 当前小时不行 → 下一小时，随机前/后窗
+    hour_base += timedelta(hours=1)
     if secrets.randbelow(2) == 0:
-        minute = secrets.randbelow(15)           # 0..14
+        minute = secrets.randbelow(15)
     else:
-        minute = 45 + secrets.randbelow(15)      # 45..59
-    second = secrets.randbelow(60)
-    target = now.replace(minute=minute, second=second, microsecond=0)
-    # 如果随机时间已经过了，推到下一小时
-    if target <= now:
-        target += timedelta(hours=1)
-    return target
+        minute = 45 + secrets.randbelow(15)
+    return hour_base.replace(minute=minute, second=secrets.randbelow(60), microsecond=0)
 
 
 def _scheduler_loop():
-    _emit_log("info", "调度器已启动 — 每小时随机触发 (前/后15分钟), 间隔>45min, 连续2次上限延迟5m23s重试")
-    last_trigger = None
+    _emit_log("info", "调度器已启动 — 每小时随机触发, 间隔>45min, 连续2次上限延迟5m23s")
     consecutive_limit_failures = 0
 
+    first_round = True
     while not _stop_event.is_set():
-        # ---- 选随机触发时间 ----
-        target = _pick_random_trigger_time()
-        # 保证 >45min 间隔
-        if last_trigger is not None:
-            min_target = last_trigger + timedelta(minutes=45)
-            if target < min_target:
-                target = min_target
+        # ---- 选下一触发时间 ----
+        target = _pick_next_trigger(_now(), first=first_round)
+        first_round = False
         _update_state(next_trigger=target.timestamp())
         _emit_log("info", "下次触发: %s" % target.strftime("%m/%d %H:%M:%S"))
 
@@ -728,19 +739,16 @@ def _scheduler_loop():
             _update_state(creating=False)
             hit_limit = False
 
-        last_trigger = _now()
-
-        # ---- 连续2次整点触发均因上限失败 → 延迟5m23s重试 ----
+        # ---- 连续2轮因上限失败 → 延迟5m23s重试 ----
         if hit_limit:
             consecutive_limit_failures += 1
-            _emit_log("warn", "整点触发因上限失败 (%d/2)" % consecutive_limit_failures)
         else:
             consecutive_limit_failures = 0
 
         if consecutive_limit_failures >= 2:
-            _emit_log("warn", "连续2轮触发均因上限失败, 延迟 5分23秒 后重试...")
+            _emit_log("warn", "连续2轮触发均因上限失败, 等待 5分23秒...")
             _update_state(round_status="冷却重试 (5m23s)")
-            time.sleep(323)  # 5分23秒
+            time.sleep(323)
             if not _stop_event.is_set():
                 try:
                     _run_one_round()
