@@ -2,7 +2,6 @@
 
 基于 iCloud Hide My Email 协议，自动批量创建 `@icloud.com` 隐私邮箱的工具。
 
-- 🔐 零手动 — 从 Chrome 自动提取 cookie，也可粘贴 Header String
 - ⏱ 定时调度 — 每小时随机触发，触达上限自动停止，等下一轮
 - 🌐 Web UI — 白色简洁面板，仪表盘 + 日志 + 邮箱列表
 - 📡 联网校时 — HTTP 对时，不怕服务器时钟漂移
@@ -124,6 +123,10 @@ pycryptodome>=3.15     # Chrome cookie 解密 (Windows)
 pywin32>=305           # Windows DPAPI (仅 Windows)
 flask>=3.0             # Web UI
 ```
+
+## 交流
+
+灌水 QQ 群：**1060714372**
 
 ## License
 
